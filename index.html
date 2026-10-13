@@ -1,0 +1,353 @@
+<!doctype html>
+<html lang="zh-HK">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>奶蛙喺邊？CUHK 實時地圖</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.css">
+<style>
+  :root {
+    --ink: #13231b;
+    --milk: #f6f9f7;
+    --frog: #2a9d5c;
+    --frog-deep: #17663b;
+    --stale: #8d9a93;
+    --warn: #c0392b;
+    --sheet: rgba(246, 249, 247, .96);
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    font-family: "PingFang HK", "Noto Sans HK", "Microsoft JhengHei", system-ui, sans-serif;
+    color: var(--ink);
+    background: var(--milk);
+    -webkit-tap-highlight-color: transparent;
+  }
+  #map { position: fixed; inset: 0; }
+
+  /* status card */
+  #status {
+    position: fixed; z-index: 500;
+    top: calc(12px + env(safe-area-inset-top, 0px)); left: 12px; right: 12px;
+    max-width: 440px;
+    background: var(--sheet);
+    border-radius: 16px;
+    padding: 12px 16px;
+    box-shadow: 0 2px 14px rgba(19, 35, 27, .18);
+    cursor: pointer;
+    border: 0; text-align: left; font: inherit; color: inherit;
+  }
+  #status b { font-size: 1.15rem; display: block; line-height: 1.35; }
+  #status small { color: #4d5e55; font-size: .85rem; }
+  #status.fresh b { color: var(--frog-deep); }
+  #status.none b { color: #4d5e55; }
+
+  /* main button */
+  #reportBtn {
+    position: fixed; z-index: 500; left: 50%; transform: translateX(-50%);
+    bottom: calc(22px + env(safe-area-inset-bottom, 0px));
+    background: var(--frog); color: #fff;
+    border: 0; border-radius: 999px;
+    padding: 16px 28px;
+    font: 700 1.1rem/1 inherit; font-family: inherit;
+    box-shadow: 0 6px 20px rgba(23, 102, 59, .45);
+    cursor: pointer;
+  }
+  #reportBtn:active { background: var(--frog-deep); }
+  #reportBtn:focus-visible, .btn:focus-visible, #status:focus-visible { outline: 3px solid #1b1b1b; outline-offset: 3px; }
+
+  /* bottom sheet */
+  .sheet {
+    position: fixed; z-index: 600; left: 0; right: 0;
+    bottom: 0;
+    padding: 18px 16px calc(18px + env(safe-area-inset-bottom, 0px));
+    background: var(--sheet);
+    border-radius: 20px 20px 0 0;
+    box-shadow: 0 -4px 24px rgba(19, 35, 27, .22);
+    display: none;
+  }
+  .sheet.open { display: block; animation: up .18s ease-out; }
+  .sheet .inner { max-width: 440px; margin: 0 auto; display: grid; gap: 10px; }
+  .sheet h2 { margin: 0 0 2px; font-size: 1.05rem; }
+  .sheet p { margin: 0; font-size: .9rem; color: #4d5e55; }
+  .btn {
+    border: 0; border-radius: 12px; padding: 14px 16px;
+    font: 600 1rem/1.2 inherit; font-family: inherit; cursor: pointer;
+    background: #e3ece7; color: var(--ink);
+  }
+  .btn.primary { background: var(--frog); color: #fff; }
+  .btn.primary:active { background: var(--frog-deep); }
+  .row { display: grid; grid-template-columns: 1fr 1.6fr; gap: 10px; }
+  @keyframes up { from { transform: translateY(24px); opacity: 0; } to { transform: none; opacity: 1; } }
+
+  /* toast */
+  #toast {
+    position: fixed; z-index: 700; left: 50%; transform: translateX(-50%);
+    top: calc(96px + env(safe-area-inset-top, 0px));
+    background: var(--ink); color: #fff; border-radius: 12px;
+    padding: 10px 16px; font-size: .92rem; max-width: 90vw;
+    display: none; text-align: center;
+  }
+  #toast.show { display: block; }
+  #toast.err { background: var(--warn); }
+
+  /* markers */
+  .frog {
+    width: 46px; height: 46px; border-radius: 50%;
+    background: #fff; border: 3px solid var(--stale);
+    display: grid; place-items: center; font-size: 26px; line-height: 1;
+    position: relative;
+  }
+  .frog.fresh { border-color: var(--frog); }
+  .frog.fresh::after {
+    content: ""; position: absolute; inset: -9px; border-radius: 50%;
+    border: 3px solid var(--frog); opacity: 0;
+    animation: ping 1.8s ease-out infinite;
+  }
+  .frog.draft { border-color: #1b1b1b; border-style: dashed; }
+  .dot { width: 14px; height: 14px; border-radius: 50%; background: var(--stale); border: 2px solid #fff; }
+  @keyframes ping { 0% { transform: scale(.85); opacity: .8; } 100% { transform: scale(1.35); opacity: 0; } }
+  @media (prefers-reduced-motion: reduce) {
+    .frog.fresh::after { animation: none; opacity: .5; }
+    .sheet.open { animation: none; }
+  }
+</style>
+</head>
+<body>
+
+<div id="map" aria-label="CUHK 地圖"></div>
+
+<button id="status" class="none" type="button" aria-live="polite">
+  <b id="statusMain">載入緊…</b>
+  <small id="statusSub"></small>
+</button>
+
+<button id="reportBtn" type="button">🐸 我見到奶蛙</button>
+
+<!-- choose how to report -->
+<div id="chooseSheet" class="sheet" role="dialog" aria-label="報告奶蛙位置">
+  <div class="inner">
+    <h2>奶蛙喺邊度？</h2>
+    <button class="btn primary" id="useGps" type="button">用我而家嘅位置</button>
+    <button class="btn" id="usePick" type="button">喺地圖上自己揀位置</button>
+    <button class="btn" id="cancelChoose" type="button">取消</button>
+  </div>
+</div>
+
+<!-- confirm placement -->
+<div id="placeSheet" class="sheet" role="dialog" aria-label="確認位置">
+  <div class="inner">
+    <h2>確認奶蛙位置</h2>
+    <p>點一下地圖或者拖動標記，調整到奶蛙實際位置。</p>
+    <div class="row">
+      <button class="btn" id="cancelPlace" type="button">取消</button>
+      <button class="btn primary" id="confirmPlace" type="button">確認並報告</button>
+    </div>
+  </div>
+</div>
+
+<div id="toast" role="status"></div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-database-compat.js"></script>
+<script>
+/* ===================== 1. 設定（只需要改呢度） ===================== */
+// 貼上你自己 Firebase 專案嘅設定（Project settings → Your apps → Web app）
+const firebaseConfig = {
+  apiKey: "AIzaSyCTrI4Atontg9t1J8VkrHGKZSaIhGADKwU",
+  authDomain: "naiwa-map.firebaseapp.com",
+  databaseURL: "https://naiwa-map-default-rtdb.asia-southeast1.firebasedatabase.app",
+  projectId: "naiwa-map",
+  appId: "1:1060826241008:web:4631a4019a25719e60af35"
+};
+
+const CAMPUS = [22.4196, 114.2068];                 // CUHK 大約中心
+const BOUNDS = { latMin: 22.40, latMax: 22.44, lngMin: 114.18, lngMax: 114.23 }; // 要同 database rules 一致
+const FRESH_MIN = 20;       // 幾多分鐘內算「新鮮」
+const MAX_MIN = 90;         // 超過就唔顯示
+const CONFIRM_RADIUS_M = 150; // 呢個範圍內嘅多個報告當係互相確認
+const COOLDOWN_MS = 3 * 60 * 1000; // 同一部裝置兩次報告最少隔幾耐
+
+/* ===================== 2. 地圖 ===================== */
+const $ = (id) => document.getElementById(id);
+const map = L.map("map", { zoomControl: false, maxBounds: [[22.39, 114.17], [22.45, 114.24]], minZoom: 14 })
+  .setView(CAMPUS, 16);
+L.control.zoom({ position: "topright" }).addTo(map);
+L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
+  maxZoom: 19,
+  attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'
+}).addTo(map);
+const layer = L.layerGroup().addTo(map);
+
+function frogIcon(cls) {
+  return L.divIcon({ className: "", html: `<div class="frog ${cls}">🐸</div>`, iconSize: [46, 46], iconAnchor: [23, 23] });
+}
+function dotIcon(opacity) {
+  return L.divIcon({ className: "", html: `<div class="dot" style="opacity:${opacity}"></div>`, iconSize: [14, 14], iconAnchor: [7, 7] });
+}
+
+/* ===================== 3. Firebase ===================== */
+const configured = !firebaseConfig.databaseURL.includes("YOUR-PROJECT");
+let db = null, offset = 0, sightings = [];
+
+function nowMs() { return Date.now() + offset; }
+
+function toast(msg, isErr) {
+  const t = $("toast");
+  t.textContent = msg;
+  t.className = "show" + (isErr ? " err" : "");
+  clearTimeout(toast._t);
+  toast._t = setTimeout(() => { t.className = ""; }, 3500);
+}
+
+if (configured) {
+  firebase.initializeApp(firebaseConfig);
+  db = firebase.database();
+  db.ref(".info/serverTimeOffset").on("value", (s) => { offset = s.val() || 0; render(); });
+  // 只拉最近嘅資料；多減 10 分鐘做時鐘誤差緩衝
+  db.ref("sightings")
+    .orderByChild("ts")
+    .startAt(Date.now() - (MAX_MIN + 10) * 60000)
+    .limitToLast(80)
+    .on("value", (snap) => {
+      const arr = [];
+      snap.forEach((c) => {
+        const v = c.val();
+        if (v && typeof v.lat === "number" && typeof v.lng === "number" && typeof v.ts === "number") arr.push(v);
+      });
+      sightings = arr;
+      render();
+    }, () => { setStatus("none", "連唔到資料庫", "請檢查網絡或 Firebase 設定"); });
+} else {
+  setStatus("none", "未設定資料庫", "打開 index.html，貼上你嘅 Firebase 設定");
+}
+
+/* ===================== 4. 顯示 ===================== */
+function setStatus(cls, main, sub) {
+  $("status").className = cls;
+  $("statusMain").textContent = main;
+  $("statusSub").textContent = sub || "";
+}
+
+function minutesAgo(ts) { return Math.max(0, Math.round((nowMs() - ts) / 60000)); }
+function agoText(m) { return m < 1 ? "啱啱" : m + " 分鐘前"; }
+
+let latest = null;
+function render() {
+  layer.clearLayers();
+  if (!configured) return;
+  const list = sightings
+    .map((s) => ({ ...s, age: minutesAgo(s.ts) }))
+    .filter((s) => s.age <= MAX_MIN)
+    .sort((a, b) => b.ts - a.ts);
+
+  if (!list.length) {
+    latest = null;
+    setStatus("none", "近 " + MAX_MIN + " 分鐘冇人報告過", "見到奶蛙就㩒下面個掣話畀大家知");
+    return;
+  }
+
+  latest = list[0];
+  // 舊報告：細點，越舊越淡
+  list.slice(1).forEach((s) => {
+    const op = Math.max(0.25, 1 - s.age / MAX_MIN);
+    L.marker([s.lat, s.lng], { icon: dotIcon(op), keyboard: false })
+      .bindTooltip(agoText(s.age)).addTo(layer);
+  });
+
+  const fresh = latest.age <= FRESH_MIN;
+  L.marker([latest.lat, latest.lng], { icon: frogIcon(fresh ? "fresh" : ""), zIndexOffset: 1000 })
+    .bindTooltip(agoText(latest.age)).addTo(layer);
+
+  // 有幾多人喺附近、近期都報告過（互相確認）
+  const here = L.latLng(latest.lat, latest.lng);
+  const confirms = list.filter((s) => s.age <= FRESH_MIN + 10 && here.distanceTo([s.lat, s.lng]) <= CONFIRM_RADIUS_M).length;
+  const sub = (confirms > 1 ? confirms + " 個人報告咗呢個位置 · " : "") + "撳呢度跳去地圖位置" + (fresh ? "" : " · 可能已經走咗");
+  setStatus(fresh ? "fresh" : "", "最新目擊：" + agoText(latest.age), sub);
+}
+setInterval(render, 30000);
+
+$("status").addEventListener("click", () => {
+  if (latest) map.flyTo([latest.lat, latest.lng], Math.max(map.getZoom(), 17));
+});
+
+/* ===================== 5. 報告流程 ===================== */
+let draft = null;
+
+function openSheet(id) { ["chooseSheet", "placeSheet"].forEach((s) => $(s).classList.toggle("open", s === id)); }
+function showMain(show) { $("reportBtn").style.display = show ? "" : "none"; }
+
+function inCampus(lat, lng) {
+  return lat >= BOUNDS.latMin && lat <= BOUNDS.latMax && lng >= BOUNDS.lngMin && lng <= BOUNDS.lngMax;
+}
+
+function lastReportAt() {
+  try { return Number(localStorage.getItem("frog:last") || 0); } catch (e) { return 0; }
+}
+
+$("reportBtn").addEventListener("click", () => {
+  if (!configured) return toast("未設定資料庫，暫時唔可以報告", true);
+  const wait = COOLDOWN_MS - (Date.now() - lastReportAt());
+  if (wait > 0) return toast("多謝！" + Math.ceil(wait / 60000) + " 分鐘後再報告啦", true);
+  openSheet("chooseSheet");
+  showMain(false);
+});
+
+$("cancelChoose").addEventListener("click", () => { openSheet(null); showMain(true); });
+
+function startPlacing(latlng) {
+  openSheet("placeSheet");
+  if (draft) map.removeLayer(draft);
+  draft = L.marker(latlng, { icon: frogIcon("draft"), draggable: true, zIndexOffset: 2000 }).addTo(map);
+  map.flyTo(latlng, Math.max(map.getZoom(), 17));
+}
+
+$("usePick").addEventListener("click", () => startPlacing(map.getCenter()));
+
+$("useGps").addEventListener("click", () => {
+  if (!navigator.geolocation) { toast("呢部裝置唔支援定位，請用地圖揀位置", true); return startPlacing(map.getCenter()); }
+  toast("定位緊…");
+  navigator.geolocation.getCurrentPosition(
+    (pos) => {
+      const { latitude, longitude } = pos.coords;
+      if (!inCampus(latitude, longitude)) {
+        toast("你好似唔喺中大範圍，請喺地圖上揀位置", true);
+        return startPlacing(map.getCenter());
+      }
+      startPlacing([latitude, longitude]);
+    },
+    () => { toast("攞唔到位置，請喺地圖上揀", true); startPlacing(map.getCenter()); },
+    { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 }
+  );
+});
+
+map.on("click", (e) => { if (draft) draft.setLatLng(e.latlng); });
+
+function endPlacing() {
+  if (draft) { map.removeLayer(draft); draft = null; }
+  openSheet(null); showMain(true);
+}
+$("cancelPlace").addEventListener("click", endPlacing);
+
+$("confirmPlace").addEventListener("click", () => {
+  if (!draft) return;
+  const p = draft.getLatLng();
+  if (!inCampus(p.lat, p.lng)) return toast("位置喺中大範圍之外", true);
+  const btn = $("confirmPlace");
+  btn.disabled = true;
+  db.ref("sightings").push({
+    lat: Number(p.lat.toFixed(5)),
+    lng: Number(p.lng.toFixed(5)),
+    ts: firebase.database.ServerValue.TIMESTAMP
+  }).then(() => {
+    try { localStorage.setItem("frog:last", String(Date.now())); } catch (e) {}
+    toast("多謝報告！🐸");
+    endPlacing();
+  }).catch(() => {
+    toast("提交失敗，請再試一次", true);
+  }).finally(() => { btn.disabled = false; });
+});
+</script>
+</body>
+</html>
